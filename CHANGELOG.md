@@ -26,11 +26,14 @@ minor versions can still change behaviour.
   one email per heartbeat cycle. The sender always looks through at least the
   default page of due emails, so a few gate-blocked ones at the front of the
   queue can't use up a small cycle.
-- **Gmail quota answers are retried.** A busy inbox's first full read (every
-  message of the week) can hit Gmail's per-user-per-minute quota; the 403 or
-  429 used to fail the read, which held every send that cycle. Such answers
-  are now retried with backoff (about a minute in all, honouring Retry-After)
-  before failing.
+- **Gmail quota answers and timed-out reads are retried.** A busy inbox's
+  first full read (every message of the week) can hit Gmail's
+  per-user-per-minute quota, and one call out of hundreds can time out or lose
+  its connection; either used to fail the read, which held every send that
+  cycle (on an inbox of several hundred messages a week, all day). Such
+  answers are now retried with backoff (about a minute in all, honouring
+  Retry-After) before failing. A send is still never repeated, since it may
+  have gone out.
 - **The logo sits beside the sign-off.** With `channels.email.signature.logo`
   set, the logo sits next to the sign-off lines (the first name Sellbird adds,
   or a closing paragraph that opens with `persona.name`), with

@@ -237,10 +237,24 @@ class GmailProvider(MailProvider):
                         method, f"{API_BASE}{path}", headers=headers, **kwargs
                     )
             except httpx.HTTPError as e:
-                logger.error(f"Gmail request failed ({path}): {e}")
+                # str() of a timeout is often empty, so name the type.
+                what = f"{type(e).__name__} {e}".strip()
                 if sending:
                     # The request may have reached Gmail before the connection failed.
+                    logger.error(f"Gmail request failed ({path}): {what}")
                     raise RuntimeError("Gmail send outcome is unknown") from e
+                if attempt < len(RETRY_DELAYS):
+                    # A read that timed out or lost its connection did nothing
+                    # on Gmail's side, so it is safe to repeat, like a quota
+                    # answer. Without this, one slow message out of hundreds
+                    # failed the whole inbox read and held every send.
+                    delay = RETRY_DELAYS[attempt]
+                    logger.warning(
+                        f"Gmail read failed on {path} ({what}): "
+                        f"waiting {delay:.0f}s, retry {attempt + 1}/{len(RETRY_DELAYS)}")
+                    await _sleep(delay)
+                    continue
+                logger.error(f"Gmail request failed ({path}): {what}")
                 return None
             if attempt < len(RETRY_DELAYS) and _rate_limited(resp):
                 # Rejected before it did anything (a send included), so safe to repeat.

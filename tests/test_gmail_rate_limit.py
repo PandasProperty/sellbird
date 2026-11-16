@@ -1,6 +1,8 @@
 """Gmail meters calls per user per minute: a quota answer is retried with
 backoff instead of failing the call (and with it the whole read, which
-then holds every send that cycle)."""
+then holds every send that cycle). A read that times out or loses its
+connection is retried the same way; a send is not, since it may have
+gone out."""
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -24,7 +26,10 @@ def provider(answers, monkeypatch):
 
     def handler(request):
         calls.append(request.url.path)
-        status, text, headers = answers.pop(0)
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        status, text, headers = answer
         return httpx.Response(status, text=text, headers=headers)
 
     async def fake_sleep(seconds):
@@ -66,3 +71,29 @@ async def test_a_quota_that_never_lifts_fails_after_the_last_delay(monkeypatch):
     p, calls, slept = provider(answers, monkeypatch)
     ok, _ = await p.test_connection()
     assert not ok and len(calls) == len(RETRY_DELAYS) + 1 and slept == list(RETRY_DELAYS)
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_times_out_is_retried_with_backoff(monkeypatch):
+    p, calls, slept = provider([httpx.ReadTimeout(""), httpx.RemoteProtocolError("closed"),
+                                (200, PROFILE, {})], monkeypatch)
+    ok, detail = await p.test_connection()
+    assert ok and "sender@example.com" in detail
+    assert len(calls) == 3 and slept == [2.0, 4.0]
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_keeps_timing_out_fails_after_the_last_delay(monkeypatch):
+    answers = [httpx.ReadTimeout("")] * (len(RETRY_DELAYS) + 1)
+    p, calls, slept = provider(answers, monkeypatch)
+    ok, _ = await p.test_connection()
+    assert not ok and len(calls) == len(RETRY_DELAYS) + 1 and slept == list(RETRY_DELAYS)
+
+
+@pytest.mark.asyncio
+async def test_a_send_that_times_out_is_not_repeated(monkeypatch):
+    # The message may have reached Gmail before the connection failed.
+    p, calls, slept = provider([httpx.ReadTimeout("")], monkeypatch)
+    with pytest.raises(RuntimeError, match="outcome is unknown"):
+        await p._request("POST", "/messages/send", sending=True, json={"raw": "x"})
+    assert len(calls) == 1 and slept == []
